@@ -1,0 +1,15 @@
+artifact_uri: file:///Users/venkatsaiganeshtadiboina/Desktop/Machine_learning_projects/Telecom_custmor_churn_model/mlruns/141259543480798823/08fcca3bcfe440f6b49a417758c15a47/artifacts
+end_time: 1777089563041
+entry_point_name: ''
+experiment_id: '141259543480798823'
+lifecycle_stage: active
+run_id: 08fcca3bcfe440f6b49a417758c15a47
+run_name: thundering-goat-308
+run_uuid: 08fcca3bcfe440f6b49a417758c15a47
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1777089560118
+status: 3
+tags: []
+user_id: venkatsaiganeshtadiboina

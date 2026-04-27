@@ -1,0 +1,15 @@
+artifact_uri: file:///Users/venkatsaiganeshtadiboina/Desktop/Machine_learning_projects/Telecom_custmor_churn_model/mlruns/141259543480798823/a6c6ae3778c64b38ab62c92448aeb2ce/artifacts
+end_time: 1776931640468
+entry_point_name: ''
+experiment_id: '141259543480798823'
+lifecycle_stage: active
+run_id: a6c6ae3778c64b38ab62c92448aeb2ce
+run_name: hilarious-rat-341
+run_uuid: a6c6ae3778c64b38ab62c92448aeb2ce
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1776931637540
+status: 3
+tags: []
+user_id: venkatsaiganeshtadiboina
