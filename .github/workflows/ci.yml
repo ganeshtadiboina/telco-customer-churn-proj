@@ -27,4 +27,5 @@ jobs:
           context:
           file: ./dockerfile # change if your Dockerfile has a different name or path
           push: true
-          tags: 
+          tags: venkatsaiganesh/telco-cstmr-churn
+          
