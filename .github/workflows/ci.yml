@@ -6,7 +6,7 @@ on:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-lates
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
@@ -28,4 +28,4 @@ jobs:
           file: ./dockerfile # change if your Dockerfile has a different name or path
           push: true
           tags: venkatsaiganesh/telco-cstmr-churn
-          
+
