@@ -1,229 +1,145 @@
 """
+Inference helpers for the Telco churn model.
 
-INFERENCE PIPELINE - Production ML Model Serving With Feature Consistency 
-
-====================================================
-
-This module provides the core inference functionality for the Telco Churn prediction model.
-
-It enusres match training-time feature transformations exactly match training-time transformations, which is CRITICAL for model accuracy in production.
-
-key Responsibilites:
-1. Load MLflow-logged model and feature metadata from training 
-2. Apply identical features transformation as usead during training 
-3. Ensure correct feature ordering for model input 
-4. Convert model predictions to user-friendly output
-
-CRITICAL PATTERN: Training/Serving Consistency 
-- Uses fixed BINARY_MAP for deterministic binary encoding 
-- Applies same one-hot encoding with drop_frist=True
-- Maintains exact features column order from gracefully 
-
-Production Deployment:
-- MODEL_DIR points to constainerized model artifacts
-- Feature schema loaded from training-time artifacts 
-- Optimized for single-row inference (real-time serving)
+This module loads a trained MLflow model plus the feature column list saved by
+the training pipeline, then applies the same basic transformations expected by
+the model before prediction.
 """
 
+from pathlib import Path
 
-import os
+import mlflow
 import pandas as pd
-import mlflow 
-
-# === MODEL LOADING CONFIGURATION ===
-# Important: This path is set during docker Container build.
-# In development: uses local MLflow artifacts
-#  In production: uses model copied to contanier at build time 
-MODEL_DIR = "/app/model"
-
-try:
-  # Load the trained XGBoost model in MLflow pyfunc format 
-  # This ensures compatibility regardless of the underlying  Ml library
-  model = mlflow.pyfunc.load_model(MODEL_DIR)
-  print(f"Model loaded successfully from {MODEL_DIR}")
-except Exception as e:
-  print(f"Failed to load model from {MODEL_DIR}: {e}")
-  # Fallback for local development (OPTIONAL)
-  try:
-    # Try loading from local MLflow tracking
-    import glob
-    local_model_path = glob.glob("./mlruns/*/*/artifacts/model")
-    if local_model_paths:
-      latest_model = max(local_model_paths, key=os.path.getmtime)
-      model = mlflow.pyfunc.load_model(latest_model)
-      MODEL_DIR = latest_model
-      print(f"Fallback: Loaded model from {latest_model}")
-    else:
-      raise Exception("No model found in local mlruns")
-  except Exception as fallback_error:
-    raise Exception("Failed to load model: {e}. Fallback failed: {fallback_error}")
 
 
-# === FEATURE SCHEMA LOADING ===
-# CRITICAL: Load the exact feature column order used during training
-# Thks ensures the model receives features in the expected order 
-try:
-  feature_file = os.path.join(MODEL_DIR, "feature_columns.txt")
-  with open(feature_file) as f:
-    FEATURE_COLS = [LN.strip() for ln in f ln.strip()]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+CONTAINER_MODEL_DIR = Path("/app/model")
+BUNDLED_RUN_DIR = PROJECT_ROOT / "src" / "serving" / "model" / "a6c6ae3778c64b38ab62c92448aeb2ce"
 
-  print(f"Loaded {len(FEATURE_COLS)} feature columns from training")
+MODEL = None
+MODEL_DIR = None
+FEATURE_COLS = []
 
-except Exception as e:
-  raise Exception(f"Failed to load features columns: {e}")
-
-
-# === FEATURES TRANSFORMATION CONSTANTS ====
-# CRITICAL: These mappings must exactly match those used in training
-# Any chnages here will cause train/serve skew and degrade model performance
-
-# Deterministic binary feature mappings (consistent with training)
 BINARY_MAP = {
-  "gender": {"Female": 0, "Male": 1}, # Demographics
-  "Partner": {"No": 0, "Yes": 1}, # Has partner
-  "Dependents": {"No": 0, "Yes": 1}, # Has dependents
-  "PhoneService": {"No": 0, "Yes": 1}, # Phoneservice
-  "PaperlessBilling": {"No": 0, "Yes": 1}, # Billing preference
-
+    "gender": {"Female": 0, "Male": 1},
+    "Partner": {"No": 0, "Yes": 1},
+    "Dependents": {"No": 0, "Yes": 1},
+    "PhoneService": {"No": 0, "Yes": 1},
+    "PaperlessBilling": {"No": 0, "Yes": 1},
 }
 
-
-# Numeric columns that need type coercion
 NUMERIC_COLS = ["tenure", "MonthlyCharges", "TotalCharges"]
 
+
+def _candidate_artifact_dirs() -> list[Path]:
+    """Return model artifact directories from most production-like to local."""
+    candidates = [CONTAINER_MODEL_DIR, BUNDLED_RUN_DIR / "artifacts" / "model"]
+
+    mlruns_dir = PROJECT_ROOT / "mlruns"
+    if mlruns_dir.exists():
+        candidates.extend(
+            sorted(
+                mlruns_dir.glob("*/*/artifacts/model"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        )
+
+    return candidates
+
+
+def _feature_file_for(model_dir: Path) -> Path:
+    """Locate feature_columns.txt for both flat Docker and MLflow layouts."""
+    flat_file = model_dir / "feature_columns.txt"
+    if flat_file.exists():
+        return flat_file
+
+    sibling_file = model_dir.parent / "feature_columns.txt"
+    if sibling_file.exists():
+        return sibling_file
+
+    raise FileNotFoundError(f"feature_columns.txt not found near {model_dir}")
+
+
+def _load_model_and_features():
+    errors = []
+
+    for model_dir in _candidate_artifact_dirs():
+        if not model_dir.exists():
+            continue
+
+        try:
+            model = mlflow.pyfunc.load_model(str(model_dir))
+            feature_file = _feature_file_for(model_dir)
+            with open(feature_file, encoding="utf-8") as f:
+                feature_cols = [line.strip() for line in f if line.strip()]
+
+            if not feature_cols:
+                raise ValueError(f"No feature columns found in {feature_file}")
+
+            return model, model_dir, feature_cols
+        except Exception as exc:
+            errors.append(f"{model_dir}: {exc}")
+
+    details = "\n".join(errors) if errors else "No candidate model directories found."
+    raise RuntimeError(f"Failed to load model artifacts.\n{details}")
+
+
+def _get_model():
+    global MODEL, MODEL_DIR, FEATURE_COLS
+
+    if MODEL is None:
+        MODEL, MODEL_DIR, FEATURE_COLS = _load_model_and_features()
+        print(f"Loaded model from {MODEL_DIR} with {len(FEATURE_COLS)} features")
+
+    return MODEL
+
+
 def _serve_transform(df: pd.DataFrame) -> pd.DataFrame:
-  """
-  Apply identical feature transformations as used during model training.
+    df = df.copy()
+    df.columns = df.columns.str.strip()
 
-  This function is CRITICAL for production ML - it ensures that features are transformed exactly as they were during training to prevent train/serve skew.
+    for col in NUMERIC_COLS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
+    for col, mapping in BINARY_MAP.items():
+        if col in df.columns:
+            df[col] = (
+                df[col]
+                .astype(str)
+                .str.strip()
+                .map(mapping)
+                .astype("Int64")
+                .fillna(0)
+                .astype(int)
+            )
 
-  Transformation Pipeline:
-  1. Clean column names and handle data types
-  2. Apply deterministic binary encoding (using BINARY_MAP)
-  3. One-hot encode remaining categorical feature 
-  4. Convert boolean columns to integers
-  5. Align features with training schema and order
+    obj_cols = df.select_dtypes(include=["object"]).columns.tolist()
+    if obj_cols:
+        df = pd.get_dummies(df, columns=obj_cols, drop_first=True)
 
-  Args:
-      df: Single-row DataFrame with raw customer data 
+    for col in df.select_dtypes(include=["bool"]).columns:
+        df[col] = df[col].astype(int)
 
-  Return: DataFrame with features transformed and ordered for model input
-
-  IMPORTANT: Any changes to this function must be reflected in training
-  features engineering to maintain consistency.
-  """
-
-  df = df.copy()
-
-  # Clean column names (remove any whitespace)
-  df.columns = df.columns.str.strip()
-
-  # === STEP 1: Numeric Type Coericon ===
-  # Ensure numeric columns are properly typed (handle string inputs)
-  for c in NUMERIC_COLS:
-      if c in df.columns:
-        # Convert to numeric, replacing invalid values with NaN
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-        # Fill NaN with 0 (same as training preprocessing)
-        df[c] = df[c].fillna(0)
-
-      
-  # === STEP 2: Binary Feature Encoding ===
-  # Apply deterministic mappings for binary features
-  # CRITICAL: Must use exact same mappings as training 
-  for c, mapping in BINARY_MAP.items():
-    if c in df.columns:
-      df[c] = (
-        df[c]
-        .astype(str) # Convert to string
-        .str.strip() # Remove whitespace
-        .map(mapping) # Apply binary mapping
-        .astype("Int64") # Handle NaN values
-        .fillna(0) # Fill unknown values with 0
-        .astype(int) # Final integer conversion
-      )
-
-  # === STEP 3: One-Hot Encoding for Remaining Categorical Features ===
-  # Find remaining object/categorical columns (not in BINARY_MAP)
-  obj_cols = [c for c in df.select_dtypes(include=["Object"].columns)]
-  if obj_cols:
-    # Apply one-hot encoding with drop_first=True (same as training)
-    # This prevents multicollinearity by dropping the first category
-    df = pd.get_dummies(df, columns=obj_cols, drop_first=True)
-
-
-  # === STEP 5: Feature Alignment with Training Schema ===
-  # CRITICAL: Ensure features are in exact same order as training
-  # Missing features get filled with 0, extra features are dropped
-  df = df.reindex(columns=FEATURE_COLS, fill_value=0)
-
-  return df
+    return df.reindex(columns=FEATURE_COLS, fill_value=0)
 
 
 def predict(input_dict: dict) -> str:
-  """
-  Main prediction function for customer churn inference.
+    if not isinstance(input_dict, dict):
+        raise TypeError("input_dict must be a dictionary of customer features")
 
-  This function provides the complete inference pipeline from raw customer data to business-friendly prediction output. It's called by both the FastAPI endpoint and the Gradio interface to ensure consistent prediction.
+    model = _get_model()
+    raw_df = pd.DataFrame([input_dict])
+    df_enc = _serve_transform(raw_df)
 
-  Pipeline:
-  1.Convert input dictionary to DataFrame
-  2. Apply feature transformations (identical to trianing)
-  3. Generate model prediction using loade XGBoost model
-  4. Convert prediction to user-friendly string
+    try:
+        preds = model.predict(df_enc)
+    except Exception as exc:
+        raise RuntimeError(f"Model prediction failed: {exc}") from exc
 
-
-  Args:
-      input_dict:  Dictionary containing raw customer data with keys matching the CustomerData schema (18 features total)
-
-  Returns:
-      Human-readable prediction string:
-      - "Likely to churn" for high-risk customers (model prediction = 1)
-      - "Not likely to churn" for low-risk customers (model prediction = 0)
-
-
-  Example:
-      >>> customer_data = {
-      ...     "gender": "Female", "tenure": 1,"Contract": "Month-to-month",
-      ... "MonthlyCharges": 85.0, ... # other features 
-      ... }
-      >>> predict(customer_data)
-      "Likely to churn"
-  """
-
-  # === STEP 1: Convery Input to DataFrame === 
-  # Use the same transformation pipeline as training 
-  df_enc = _serve_transform(df)
-
-  # === STEP 3: Generate Model Prediction ===
-  # Call the loaded MLflow model for inference
-  # The model returns predictions in various formats depending on the ML library
-  try:
-    preds = model.predict(df_enc)
-
-    # Normalize prediction output to consistent format 
     if hasattr(preds, "tolist"):
-      preds = preds.tolist() # Convert numpy array to list
+        preds = preds.tolist()
 
-    # Extract single prediction value (for single-row input)
-    if isinstance(preds, (list, tuple)) and len(preds) == 1:
-      result = preds[0]
-    else:
-      result = preds
-
-  except Exception as e:
-    raise Exception(f"Model prediction failed: {e}")
-
-  # === STEP 4: Convert to Business-Friendly Output ===
-  # Convert binary prediction (0/1) to actionable business language
-  if result == 1:
-    return "Likely to churn" # High risk - needs intervention
-  else:
-    return "Not likely to churn" # Low risk - maintain normal service 
-
-
-
-
-
-
+    result = preds[0] if isinstance(preds, (list, tuple)) and preds else preds
+    return "Likely to churn" if int(result) == 1 else "Not likely to churn"

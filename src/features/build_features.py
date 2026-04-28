@@ -15,9 +15,9 @@ def _map_binary_series(s: pd.Series) -> pd.Series:
     # === DETERMINISTIC BINARY MAPPING ===
     # Critical: These exact mappings are hardcoded in serving pipeline
 
-    # Yes/No mappimg (most common pattern in telecom data)
+    # Yes/No mapping (most common pattern in telecom data)
     if valset == {"Yes", "No"}:
-        return s.map({"Female": 0, "Male": 1}).astype("Int64")
+        return s.map({"No": 0, "Yes": 1}).astype("Int64")
     
     # Gender mapping (demographic feature)
     if valset == {"Male", "Female"}:
