@@ -4,6 +4,8 @@ Production-style machine learning system for predicting telecom customer churn, 
 
 This repository is not only a model training notebook. It is an end-to-end ML engineering project that shows how a local experiment can be converted into a structured system with data validation, reproducible feature engineering, MLflow experiment tracking, FastAPI serving, Gradio UI, Docker packaging, and GitHub Actions automation.
 
+For a long-form engineering write-up, read [ARTICLE.md](ARTICLE.md).
+
 ---
 
 ## Why This Project Exists
@@ -559,4 +561,3 @@ This project shows the ability to:
 - Document the architecture clearly for future developers
 
 It is a practical example of moving from "it works in my notebook" to "it can be run, reviewed, shipped, and maintained."
-
